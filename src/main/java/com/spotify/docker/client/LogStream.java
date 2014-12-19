@@ -30,6 +30,9 @@ import org.slf4j.LoggerFactory;
 import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
+import java.nio.channels.Channels;
+import java.nio.channels.WritableByteChannel;
 
 import static com.google.common.base.Charsets.UTF_8;
 
@@ -43,7 +46,7 @@ public class LogStream extends AbstractIterator<LogMessage> implements Closeable
   LogStream(final InputStream stream) {
     this.reader = new LogReader(stream);
   }
-
+  
   @Override
   protected void finalize() throws Throwable {
     super.finalize();
@@ -84,4 +87,35 @@ public class LogStream extends AbstractIterator<LogMessage> implements Closeable
     }
     return stringBuilder.toString();
   }
+
+  /**
+   * Attach {@link OutputStream OutputStreams} to the {@link LogStream}
+   * @param stdout OutputStream for the standard out
+   * @param stderr OutputStream for the standard err
+   * @throws IOException  if an I/O error occurs.
+   */
+  public void attach(OutputStream stdout, OutputStream stderr) throws IOException {
+    try (WritableByteChannel stdoutChannel = Channels.newChannel(stdout);
+        WritableByteChannel stderrChannel = Channels.newChannel(stderr);) {
+      
+      LogMessage message;
+      
+      while((message = computeNext()) != null) {
+        switch(message.stream()) {
+          case STDERR:
+            stdoutChannel.write(message.content());
+            break;
+          case STDOUT:
+            stderrChannel.write(message.content());
+            break;
+          case STDIN:
+          default:
+            break;
+        }
+      }
+      
+      endOfData();
+    }
+  }
+  
 }
