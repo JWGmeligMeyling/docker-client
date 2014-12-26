@@ -28,26 +28,23 @@ import com.spotify.docker.client.messages.ProgressMessage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.Closeable;
+import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.SocketTimeoutException;
 import java.net.URI;
 
-import static com.google.common.io.ByteStreams.copy;
-import static com.google.common.io.ByteStreams.nullOutputStream;
 import static com.spotify.docker.client.ObjectMapperProvider.objectMapper;
 
-class ProgressStream implements Closeable {
+class ProgressStream extends FilterInputStream {
 
   private static final Logger log = LoggerFactory.getLogger(ProgressStream.class);
-  private final InputStream stream;
   private final MappingIterator<ProgressMessage> iterator;
 
   private volatile boolean closed;
 
   ProgressStream(final InputStream stream) throws IOException {
-    this.stream = stream;
+    super(stream);
     final JsonParser parser = objectMapper().getFactory().createParser(stream);
     iterator = objectMapper().readValues(parser, ProgressMessage.class);
   }
@@ -91,9 +88,6 @@ class ProgressStream implements Closeable {
   @Override
   public void close() throws IOException {
     closed = true;
-    // Jersey will close the stream and release the connection after we read all the data.
-    // We cannot call the stream's close method because it an instance of UncloseableInputStream,
-    // where close is a no-op.
-    copy(stream, nullOutputStream());
+    super.close();
   }
 }

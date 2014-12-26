@@ -43,9 +43,7 @@ import com.spotify.docker.client.messages.Version;
 
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
-import org.apache.http.impl.conn.PoolingHttpClientConnectionManager;
 import org.apache.http.pool.PoolStats;
-import org.glassfish.jersey.apache.connector.ApacheClientProperties;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
@@ -713,7 +711,7 @@ public class DefaultDockerClientTest {
     }
   }
 
-  @Test(expected = DockerTimeoutException.class)
+  @Test(expected = DockerTimeoutException.class, timeout = 100000)
   public void testReadTimeout() throws Exception {
     try (final ServerSocket s = new ServerSocket()) {
       // Bind and listen but do not accept -> read will time out.
@@ -728,13 +726,13 @@ public class DefaultDockerClientTest {
     }
   }
 
-  @Test(expected = DockerTimeoutException.class)
+  @Test(expected = DockerTimeoutException.class, timeout = 60000)
   public void testConnectionRequestTimeout() throws Exception {
     final int connectionPoolSize = 1;
     final int callableCount = connectionPoolSize * 100;
 
     final ExecutorService executor = Executors.newCachedThreadPool();
-    final CompletionService completion = new ExecutorCompletionService(executor);
+    final CompletionService<ContainerExit> completion = new ExecutorCompletionService<ContainerExit>(executor);
 
     // Spawn and wait on many more containers than the connection pool size.
     // This should cause a timeout once the connection pool is exhausted.
@@ -941,6 +939,7 @@ public class DefaultDockerClientTest {
     assertThat(c.ping(), equalTo("OK"));
 
     sut.stopContainer(containerId, 10);
+    c.close();
   }
 
   @Test
@@ -1059,7 +1058,7 @@ public class DefaultDockerClientTest {
         .cmd("sh", "-c", "while :; do sleep 1; done")
         .build();
     final String name = randomName();
-    final ContainerCreation creation = sut.createContainer(config, name);
+    sut.createContainer(config, name);
   }
 
   @Test(expected = ContainerNotFoundException.class)
@@ -1118,12 +1117,7 @@ public class DefaultDockerClientTest {
   }
 
   private PoolStats getClientConnectionPoolStats(final DefaultDockerClient client) {
-    return ((PoolingHttpClientConnectionManager) client.getClient().getConfiguration()
-        .getProperty(ApacheClientProperties.CONNECTION_MANAGER)).getTotalStats();
+    return sut.getCm().getTotalStats();
   }
 
-  private PoolStats getNoTimeoutClientConnectionPoolStats(final DefaultDockerClient client) {
-    return ((PoolingHttpClientConnectionManager) client.getNoTimeoutClient().getConfiguration()
-        .getProperty(ApacheClientProperties.CONNECTION_MANAGER)).getTotalStats();
-  }
 }

@@ -43,6 +43,10 @@ public class LogStream extends AbstractIterator<LogMessage> implements Closeable
   LogStream(final InputStream stream) {
     this.reader = new LogReader(stream);
   }
+  
+  LogStream(final LogReader reader) {
+    this.reader = reader;
+  }
 
   @Override
   protected void finalize() throws Throwable {

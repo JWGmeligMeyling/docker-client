@@ -21,11 +21,10 @@
 
 package com.spotify.docker.client;
 
-import org.apache.http.HttpHost;
 import org.apache.http.annotation.Immutable;
 import org.apache.http.conn.ConnectTimeoutException;
-import org.apache.http.conn.socket.ConnectionSocketFactory;
-import org.apache.http.protocol.HttpContext;
+import org.apache.http.conn.scheme.SchemeSocketFactory;
+import org.apache.http.params.HttpParams;
 import org.newsclub.net.unix.AFUNIXSocketAddress;
 
 import java.io.File;
@@ -34,12 +33,13 @@ import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
 import java.net.URI;
+import java.net.UnknownHostException;
 
 /**
  * Provides a ConnectionSocketFactory for connecting Apache HTTP clients to Unix sockets.
  */
 @Immutable
-public class UnixConnectionSocketFactory implements ConnectionSocketFactory {
+public class UnixConnectionSocketFactory implements SchemeSocketFactory {
 
   private File socketFile;
 
@@ -62,23 +62,25 @@ public class UnixConnectionSocketFactory implements ConnectionSocketFactory {
   }
 
   @Override
-  public Socket createSocket(final HttpContext context) throws IOException {
+  public boolean isSecure(Socket sock) throws IllegalArgumentException {
+    return false;
+  }
+
+  @Override
+  public Socket createSocket(HttpParams params) throws IOException {
     return new ApacheUnixSocket();
   }
 
   @Override
-  public Socket connectSocket(final int connectTimeout,
-                              final Socket socket,
-                              final HttpHost host,
-                              final InetSocketAddress remoteAddress,
-                              final InetSocketAddress localAddress,
-                              final HttpContext context) throws IOException {
+  public Socket connectSocket(Socket sock, InetSocketAddress remoteAddress,
+      InetSocketAddress localAddress, HttpParams params) throws IOException, UnknownHostException,
+      ConnectTimeoutException {
     try {
-      socket.connect(new AFUNIXSocketAddress(socketFile), connectTimeout);
+      sock.connect(new AFUNIXSocketAddress(socketFile));
     } catch (SocketTimeoutException e) {
-      throw new ConnectTimeoutException(e, null, remoteAddress.getAddress());
+      throw new ConnectTimeoutException();
     }
 
-    return socket;
+    return sock;
   }
 }

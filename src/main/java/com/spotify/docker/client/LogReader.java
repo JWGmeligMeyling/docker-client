@@ -21,21 +21,20 @@
 
 package com.spotify.docker.client;
 
+import static com.google.common.base.Charsets.UTF_8;
+
 import com.google.common.io.ByteStreams;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.Closeable;
 import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.Reader;
 import java.nio.ByteBuffer;
 
-import static com.google.common.io.ByteStreams.copy;
-import static com.google.common.io.ByteStreams.nullOutputStream;
-
-public class LogReader implements Closeable {
+public class LogReader extends Reader {
 
   private static final Logger log = LoggerFactory.getLogger(LogReader.class);
   private final InputStream stream;
@@ -45,9 +44,10 @@ public class LogReader implements Closeable {
   private volatile boolean closed;
 
   public LogReader(final InputStream stream) {
+    super(stream);
     this.stream = stream;
   }
-
+  
   public LogMessage nextMessage() throws IOException {
 
     // Read header
@@ -79,13 +79,24 @@ public class LogReader implements Closeable {
     }
   }
 
+  public String readFully() throws IOException {
+    StringBuilder stringBuilder = new StringBuilder();
+    LogMessage message;
+    while ((message = nextMessage()) != null) {
+      stringBuilder.append(UTF_8.decode(message.content()));
+    }
+    return stringBuilder.toString();
+  }
+
   @Override
   public void close() throws IOException {
     closed = true;
-    // Jersey will close the stream and release the connection after we read all the data.
-    // We cannot call the stream's close method because it an instance of UncloseableInputStream,
-    // where close is a no-op.
-    copy(stream, nullOutputStream());
+    stream.close();
+  }
+
+  @Override
+  public int read(char[] cbuf, int off, int len) throws IOException {
+    throw new UnsupportedOperationException();
   }
 
 }

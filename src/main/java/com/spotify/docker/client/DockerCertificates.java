@@ -21,8 +21,8 @@
 
 package com.spotify.docker.client;
 
-import org.apache.http.conn.ssl.SSLConnectionSocketFactory;
-import org.apache.http.conn.ssl.SSLContexts;
+import org.apache.http.conn.ssl.SSLContextBuilder;
+import org.apache.http.conn.ssl.SSLSocketFactory;
 import org.apache.http.conn.ssl.X509HostnameVerifier;
 import org.bouncycastle.openssl.PEMKeyPair;
 import org.bouncycastle.openssl.PEMParser;
@@ -89,7 +89,7 @@ public class DockerCertificates {
       keyStore.setCertificateEntry("client", clientCert);
       keyStore.setKeyEntry("key", clientKey, KEY_STORE_PASSWORD, new Certificate[]{clientCert});
 
-      this.sslContext = SSLContexts.custom()
+      this.sslContext = new SSLContextBuilder()
           .loadTrustMaterial(trustStore)
           .loadKeyMaterial(keyStore, KEY_STORE_PASSWORD)
           .useTLS()
@@ -111,7 +111,7 @@ public class DockerCertificates {
   }
 
   public X509HostnameVerifier hostnameVerifier() {
-    return SSLConnectionSocketFactory.ALLOW_ALL_HOSTNAME_VERIFIER;
+    return SSLSocketFactory.ALLOW_ALL_HOSTNAME_VERIFIER;
   }
 
   public static Builder builder() {

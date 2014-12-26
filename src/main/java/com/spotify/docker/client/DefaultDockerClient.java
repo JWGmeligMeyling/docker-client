@@ -23,7 +23,6 @@ package com.spotify.docker.client;
 
 import com.google.common.io.CharStreams;
 import com.google.common.net.HostAndPort;
-
 import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -42,22 +41,18 @@ import com.spotify.docker.client.messages.ProgressMessage;
 import com.spotify.docker.client.messages.RemovedImage;
 import com.spotify.docker.client.messages.Version;
 
-import org.apache.http.client.config.RequestConfig;
-import org.apache.http.config.Registry;
-import org.apache.http.config.RegistryBuilder;
+import org.apache.http.client.params.HttpClientParams;
 import org.apache.http.conn.ConnectTimeoutException;
-import org.apache.http.conn.socket.ConnectionSocketFactory;
-import org.apache.http.conn.socket.PlainConnectionSocketFactory;
-import org.apache.http.conn.ssl.SSLConnectionSocketFactory;
-import org.apache.http.impl.conn.PoolingHttpClientConnectionManager;
-import org.glassfish.hk2.api.MultiException;
-import org.glassfish.jersey.apache.connector.ApacheClientProperties;
-import org.glassfish.jersey.apache.connector.ApacheConnectorProvider;
-import org.glassfish.jersey.client.ClientConfig;
-import org.glassfish.jersey.client.ClientProperties;
-import org.glassfish.jersey.client.RequestEntityProcessing;
-import org.glassfish.jersey.internal.util.Base64;
-import org.glassfish.jersey.jackson.JacksonFeature;
+import org.apache.http.conn.scheme.PlainSocketFactory;
+import org.apache.http.conn.scheme.Scheme;
+import org.apache.http.conn.scheme.SchemeRegistry;
+import org.apache.http.conn.ssl.SSLSocketFactory;
+import org.apache.http.impl.client.DefaultHttpClient;
+import org.apache.http.impl.conn.PoolingClientConnectionManager;
+import org.apache.http.params.BasicHttpParams;
+import org.apache.http.params.HttpConnectionParams;
+import org.jboss.resteasy.client.jaxrs.ResteasyClientBuilder;
+import org.jboss.resteasy.client.jaxrs.engines.ApacheHttpClient4Engine;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -73,16 +68,15 @@ import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.Base64;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ExecutionException;
 import java.util.regex.Pattern;
 
-import javax.ws.rs.ProcessingException;
 import javax.ws.rs.WebApplicationException;
 import javax.ws.rs.client.Client;
-import javax.ws.rs.client.ClientBuilder;
 import javax.ws.rs.client.Entity;
 import javax.ws.rs.client.Invocation;
 import javax.ws.rs.client.ResponseProcessingException;
@@ -124,12 +118,6 @@ public class DefaultDockerClient implements DockerClient, Closeable {
   private static final long DEFAULT_READ_TIMEOUT_MILLIS = SECONDS.toMillis(30);
   private static final int DEFAULT_CONNECTION_POOL_SIZE = 100;
 
-  private static final ClientConfig DEFAULT_CONFIG = new ClientConfig(
-      ObjectMapperProvider.class,
-      JacksonFeature.class,
-      LogsResponseReader.class,
-      ProgressResponseReader.class);
-
   private static final Pattern CONTAINER_NAME_PATTERN = Pattern.compile("/?[a-zA-Z0-9_-]+");
 
   private static final GenericType<List<Container>> CONTAINER_LIST =
@@ -146,6 +134,9 @@ public class DefaultDockerClient implements DockerClient, Closeable {
 
   private final URI uri;
   private final AuthConfig authConfig;
+  
+  private final PoolingClientConnectionManager cm;
+  private final PoolingClientConnectionManager noTimeoutCm;
 
   Client getClient() {
     return client;
@@ -153,6 +144,14 @@ public class DefaultDockerClient implements DockerClient, Closeable {
 
   Client getNoTimeoutClient() {
     return noTimeoutClient;
+  }
+
+  PoolingClientConnectionManager getCm() {
+    return cm;
+  }
+
+  PoolingClientConnectionManager getNoTimeoutCm() {
+    return noTimeoutCm;
   }
 
   /**
@@ -179,7 +178,7 @@ public class DefaultDockerClient implements DockerClient, Closeable {
   public DefaultDockerClient(final URI uri, final DockerCertificates dockerCertificates) {
     this(new Builder().uri(uri).dockerCertificates(dockerCertificates));
   }
-
+  
   /**
    * Create a new client using the configuration of the builder.
    */
@@ -196,40 +195,51 @@ public class DefaultDockerClient implements DockerClient, Closeable {
       this.uri = originalUri;
     }
 
-    final PoolingHttpClientConnectionManager cm = getConnectionManager(builder);
-    final PoolingHttpClientConnectionManager noTimeoutCm = getConnectionManager(builder);
+    cm = getConnectionManager(builder);
+    noTimeoutCm = getConnectionManager(builder);
 
-    final RequestConfig requestConfig = RequestConfig.custom()
-        .setConnectionRequestTimeout((int) builder.connectTimeoutMillis)
-        .setConnectTimeout((int) builder.connectTimeoutMillis)
-        .setSocketTimeout((int) builder.readTimeoutMillis)
-        .build();
-
-    final ClientConfig config = DEFAULT_CONFIG
-        .connectorProvider(new ApacheConnectorProvider())
-        .property(ApacheClientProperties.CONNECTION_MANAGER, cm)
-        .property(ApacheClientProperties.REQUEST_CONFIG, requestConfig);
+    BasicHttpParams params = new BasicHttpParams();
+    HttpConnectionParams.setSoTimeout(params, (int) builder.readTimeoutMillis);
+    HttpConnectionParams.setConnectionTimeout(params, (int) builder.connectTimeoutMillis);
+    HttpClientParams.setConnectionManagerTimeout(params, (int) builder.connectTimeoutMillis);
     
+    DefaultHttpClient httpClient = new DefaultHttpClient(cm, params);
+    ApacheHttpClient4Engine engine = new ApacheHttpClient4Engine(httpClient, true);
+
+    if (builder.dockerCertificates != null) {
+      engine.setHostnameVerifier(builder.dockerCertificates.hostnameVerifier());
+      engine.setSslContext(builder.dockerCertificates.sslContext());
+    }
+
+    this.client =
+        new ResteasyClientBuilder().httpEngine(engine).register(ObjectMapperProvider.class)
+            .register(LogsResponseReader.class).register(ProgressResponseReader.class).build();
+
+    BasicHttpParams noTimeoutParams = new BasicHttpParams();
+    HttpConnectionParams.setSoTimeout(noTimeoutParams, (int) builder.readTimeoutMillis);
+    HttpConnectionParams.setConnectionTimeout(noTimeoutParams, (int) NO_TIMEOUT);
+    HttpClientParams.setConnectionManagerTimeout(noTimeoutParams, (int) NO_TIMEOUT);
+
+    DefaultHttpClient noTimeoutHttpClient = new DefaultHttpClient(noTimeoutCm, noTimeoutParams);
+    ApacheHttpClient4Engine noTimeoutEngine =
+        new ApacheHttpClient4Engine(noTimeoutHttpClient, true);
+
+    if (builder.dockerCertificates != null) {
+      noTimeoutEngine.setHostnameVerifier(builder.dockerCertificates.hostnameVerifier());
+      noTimeoutEngine.setSslContext(builder.dockerCertificates.sslContext());
+    }
+
+    this.noTimeoutClient =
+        new ResteasyClientBuilder().httpEngine(noTimeoutEngine)
+            .register(ObjectMapperProvider.class).register(LogsResponseReader.class)
+            .register(ProgressResponseReader.class).build();
+
     this.authConfig = builder.authConfig;
-
-    this.client = ClientBuilder.newClient(config);
-
-    // ApacheConnector doesn't respect per-request timeout settings.
-    // Workaround: instead create a client with infinite read timeout,
-    // and use it for waitContainer and stopContainer.
-    final RequestConfig noReadTimeoutRequestConfig = RequestConfig.copy(requestConfig)
-        .setSocketTimeout((int) NO_TIMEOUT)
-        .build();
-    this.noTimeoutClient = ClientBuilder.newBuilder()
-        .withConfig(config)
-        .property(ApacheClientProperties.CONNECTION_MANAGER, noTimeoutCm)
-        .property(ApacheClientProperties.REQUEST_CONFIG, noReadTimeoutRequestConfig)
-        .build();
   }
 
-  private PoolingHttpClientConnectionManager getConnectionManager(Builder builder) {
-    final PoolingHttpClientConnectionManager cm =
-        new PoolingHttpClientConnectionManager(getSchemeRegistry(builder));
+  private PoolingClientConnectionManager getConnectionManager(Builder builder) {
+    final PoolingClientConnectionManager cm =
+        new PoolingClientConnectionManager(getSchemeRegistry(builder));
 
     // Use all available connections instead of artificially limiting ourselves to 2 per server.
     cm.setMaxTotal(builder.connectionPoolSize);
@@ -238,25 +248,24 @@ public class DefaultDockerClient implements DockerClient, Closeable {
     return cm;
   }
 
-  private Registry<ConnectionSocketFactory> getSchemeRegistry(final Builder builder) {
-    final SSLConnectionSocketFactory https;
+  private SchemeRegistry getSchemeRegistry(final Builder builder) {
+    final SchemeRegistry registry = new SchemeRegistry();
+    final SSLSocketFactory https;
     if (builder.dockerCertificates == null) {
-      https = SSLConnectionSocketFactory.getSocketFactory();
+      https = SSLSocketFactory.getSocketFactory();
     } else {
-      https = new SSLConnectionSocketFactory(builder.dockerCertificates.sslContext(),
-                                             builder.dockerCertificates.hostnameVerifier());
+      https = new SSLSocketFactory(builder.dockerCertificates.sslContext(),
+                                   builder.dockerCertificates.hostnameVerifier());
     }
 
-    final RegistryBuilder registryBuilder = RegistryBuilder
-        .<ConnectionSocketFactory>create()
-        .register("https", https)
-        .register("http", PlainConnectionSocketFactory.getSocketFactory());
+    registry.register(new Scheme("http", 80, PlainSocketFactory.getSocketFactory()));
+    registry.register(new Scheme("https", 443, https));
 
     if (builder.uri.getScheme().equals(UNIX_SCHEME)) {
-      registryBuilder.register(UNIX_SCHEME, new UnixConnectionSocketFactory(builder.uri));
+      registry.register(new Scheme(UNIX_SCHEME, 80, new UnixConnectionSocketFactory(builder.uri)));
     }
 
-    return registryBuilder.build();
+    return registry;
   }
 
   @Override
@@ -388,9 +397,7 @@ public class DefaultDockerClient implements DockerClient, Closeable {
       final WebTarget resource = resource()
           .path("containers").path(containerId).path("start");
       request(POST, resource, resource
-                  .request(APPLICATION_JSON_TYPE)
-                  .property(ClientProperties.REQUEST_ENTITY_PROCESSING,
-                            RequestEntityProcessing.BUFFERED),
+                  .request(APPLICATION_JSON_TYPE),
               Entity.json(hostConfig));
     } catch (DockerRequestException e) {
       switch (e.status()) {
@@ -646,7 +653,7 @@ public class DefaultDockerClient implements DockerClient, Closeable {
     if (imageRef.getTag() != null) {
       resource = resource.queryParam("tag", imageRef.getTag());
     }
-    
+
     try (ProgressStream pull = request(POST, ProgressStream.class, resource,
                                        resource.request(APPLICATION_JSON_TYPE)
                                                .header("X-Registry-Auth", authHeader()))) {
@@ -814,8 +821,8 @@ public class DefaultDockerClient implements DockerClient, Closeable {
     }
 
     try {
-      return request(GET, LogStream.class, resource,
-                     resource.request("application/vnd.docker.raw-stream"));
+      return new LogStream(request(GET, LogReader.class, resource,
+                     resource.request("application/vnd.docker.raw-stream")));
     } catch (DockerRequestException e) {
       switch (e.status()) {
         case 404:
@@ -839,8 +846,8 @@ public class DefaultDockerClient implements DockerClient, Closeable {
     }
 
     try {
-      return request(POST, LogStream.class, resource,
-          resource.request("application/vnd.docker.raw-stream"));
+      return new LogStream(request(POST, LogReader.class, resource,
+          resource.request("application/vnd.docker.raw-stream")));
     } catch (DockerRequestException e) {
       switch (e.status()) {
       case 404:
@@ -864,7 +871,7 @@ public class DefaultDockerClient implements DockerClient, Closeable {
       throws DockerException, InterruptedException {
     try {
       return request.async().method(method, type).get();
-    } catch (ExecutionException | MultiException e) {
+    } catch (ExecutionException | RuntimeException e) {
       throw propagate(method, resource, e);
     }
   }
@@ -874,7 +881,7 @@ public class DefaultDockerClient implements DockerClient, Closeable {
       throws DockerException, InterruptedException {
     try {
       return request.async().method(method, clazz).get();
-    } catch (ExecutionException | MultiException e) {
+    } catch (ExecutionException | RuntimeException e) {
       throw propagate(method, resource, e);
     }
   }
@@ -885,7 +892,7 @@ public class DefaultDockerClient implements DockerClient, Closeable {
       throws DockerException, InterruptedException {
     try {
       return request.async().method(method, entity, clazz).get();
-    } catch (ExecutionException | MultiException e) {
+    } catch (ExecutionException | RuntimeException e) {
       throw propagate(method, resource, e);
     }
   }
@@ -896,7 +903,7 @@ public class DefaultDockerClient implements DockerClient, Closeable {
       throws DockerException, InterruptedException {
     try {
       request.async().method(method, String.class).get();
-    } catch (ExecutionException | MultiException e) {
+    } catch (ExecutionException | RuntimeException e) {
       throw propagate(method, resource, e);
     }
   }
@@ -908,7 +915,7 @@ public class DefaultDockerClient implements DockerClient, Closeable {
       throws DockerException, InterruptedException {
     try {
       request.async().method(method, entity, String.class).get();
-    } catch (ExecutionException | MultiException e) {
+    } catch (ExecutionException | RuntimeException e) {
       throw propagate(method, resource, e);
     }
   }
@@ -916,38 +923,30 @@ public class DefaultDockerClient implements DockerClient, Closeable {
   private RuntimeException propagate(final String method, final WebTarget resource,
                                      final Exception e)
       throws DockerException, InterruptedException {
-    Throwable cause = e.getCause();
 
-    // Sometimes e is a org.glassfish.hk2.api.MultiException
-    // which contains the cause we're actually interested in.
-    // So we unpack it here.
-    if (e instanceof MultiException) {
-      cause = cause.getCause();
-    }
+    Throwable cause = e;
 
-    Response response = null;
-    if (cause instanceof ResponseProcessingException) {
-      response = ((ResponseProcessingException) cause).getResponse();
-    } else if (cause instanceof WebApplicationException) {
-      response = ((WebApplicationException) cause).getResponse();
-    } else if ((cause instanceof ProcessingException) && (cause.getCause() != null)) {
-      // For a ProcessingException, The exception message or nested Throwable cause SHOULD contain
-      // additional information about the reason of the processing failure.
-      cause = cause.getCause();
-    }
+    do {
+      Response response;
 
-    if (response != null) {
-      throw new DockerRequestException(method, resource.getUri(), response.getStatus(),
-                                       message(response), cause);
-    } else if ((cause instanceof SocketTimeoutException) ||
-               (cause instanceof ConnectTimeoutException)) {
-      throw new DockerTimeoutException(method, resource.getUri(), e);
-    } else if ((cause instanceof InterruptedIOException)
-               || (cause instanceof InterruptedException)) {
-      throw new InterruptedException("Interrupted: " + method + " " + resource);
-    } else {
-      throw new DockerException(e);
-    }
+      if (cause instanceof ResponseProcessingException) {
+        response = ((ResponseProcessingException) cause).getResponse();
+        throw new DockerRequestException(method, resource.getUri(), response.getStatus(),
+            message(response), cause);
+      } else if (cause instanceof WebApplicationException) {
+        response = ((WebApplicationException) cause).getResponse();
+        throw new DockerRequestException(method, resource.getUri(), response.getStatus(),
+            message(response), cause);
+      } else if ((cause instanceof SocketTimeoutException)
+          || (cause instanceof ConnectTimeoutException)) {
+        throw new DockerTimeoutException(method, uri, cause);
+      } else if ((cause instanceof InterruptedException)
+          || (cause instanceof InterruptedIOException)) {
+        throw new InterruptedException("Interrupted: " + method + " " + resource);
+      }
+    } while ((cause = cause.getCause()) != null);
+
+    throw new DockerException(e);
   }
 
   private String message(final Response response) {
@@ -964,9 +963,8 @@ public class DefaultDockerClient implements DockerClient, Closeable {
       return "null";
     }
     try {
-      return Base64.encodeAsString(ObjectMapperProvider
-              .objectMapper()
-              .writeValueAsString(authConfig));
+      return Base64.getEncoder().encodeToString(
+          ObjectMapperProvider.objectMapper().writeValueAsString(authConfig).getBytes());
     } catch (JsonProcessingException ex) {
       throw new DockerException("Could not encode X-Registry-Auth header", ex);
     }
@@ -1019,7 +1017,7 @@ public class DefaultDockerClient implements DockerClient, Closeable {
       return DEFAULT_HOST + ":" + DEFAULT_PORT;
     }
   }
-
+  
   public static class Builder {
 
     private URI uri;
@@ -1097,11 +1095,11 @@ public class DefaultDockerClient implements DockerClient, Closeable {
       this.connectionPoolSize = connectionPoolSize;
       return this;
     }
-    
+
     public AuthConfig authConfig() {
       return authConfig;
     }
-    
+
     /**
      * Set the auth parameters for pull/push requests from/to private repositories.
      */
